@@ -33,6 +33,7 @@ using namespace std;
 #include <ctime> 
 #include <pcl/registration/icp.h>
 #include <pcl/registration/ndt.h>
+#include <pcl/common/transforms.h>
 #include <pcl/console/time.h>   // TicToc
 
 PointCloudT pclCloud;
@@ -144,6 +145,13 @@ int main(){
 
 	typename pcl::PointCloud<PointT>::Ptr cloudFiltered (new pcl::PointCloud<PointT>);
 	typename pcl::PointCloud<PointT>::Ptr scanCloud (new pcl::PointCloud<PointT>);
+	typename pcl::PointCloud<PointT>::Ptr transformedScan (new pcl::PointCloud<PointT>);
+	pcl::NormalDistributionsTransform<PointT, PointT> ndt;
+	ndt.setTransformationEpsilon(0.01);
+	ndt.setStepSize(0.1);
+	ndt.setResolution(1.0);
+	ndt.setMaximumIterations(35);
+	ndt.setInputTarget(mapCloud);
 
 	lidar->Listen([&new_scan, &lastScanTime, &scanCloud](auto data){
 
@@ -200,16 +208,31 @@ int main(){
 		if(!new_scan){
 			
 			new_scan = true;
-			// TODO: (Filter scan using voxel filter)
+			pcl::VoxelGrid<PointT> voxelFilter;
+			voxelFilter.setInputCloud(scanCloud);
+			voxelFilter.setLeafSize(0.2f, 0.2f, 0.2f);
+			// Downsample the raw scan before matching to keep NDT fast.
+			voxelFilter.filter(*cloudFiltered);
 
-			// TODO: Find pose transform by using ICP or NDT matching
-			//pose = ....
+			// Match the filtered scan against the map, seeded by the last pose estimate.
+			ndt.setInputSource(cloudFiltered);
+
+			PointCloudT::Ptr matchedCloud(new PointCloudT);
+			Eigen::Matrix4f initGuess = transform3D(pose.rotation.yaw, pose.rotation.pitch, pose.rotation.roll,
+				pose.position.x, pose.position.y, pose.position.z).cast<float>();
+			ndt.align(*matchedCloud, initGuess);
+			// Store NDT's best map-frame pose estimate for the ego vehicle.
+			pose = getPose(ndt.getFinalTransformation().cast<double>());
 
 			// TODO: Transform scan so it aligns with ego's actual pose and render that scan
+			// Convert the scan from lidar/vehicle-local coordinates into the true map frame.
+			pcl::transformPointCloud(*scanCloud, *transformedScan, transform3D(truePose.rotation.yaw, truePose.rotation.pitch, truePose.rotation.roll,
+				truePose.position.x, truePose.position.y, truePose.position.z).cast<float>());
 
 			viewer->removePointCloud("scan");
 			// TODO: Change `scanCloud` below to your transformed scan
-			renderPointCloud(viewer, scanCloud, "scan", Color(1,0,0) );
+			// Render the transformed scan so it visually lines up with the map and ego pose.
+			renderPointCloud(viewer, transformedScan, "scan", Color(1,0,0) );
 
 			viewer->removeAllShapes();
 			drawCar(pose, 1,  Color(0,1,0), 0.35, viewer);
