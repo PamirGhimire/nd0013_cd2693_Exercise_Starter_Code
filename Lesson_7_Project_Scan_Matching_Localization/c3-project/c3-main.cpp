@@ -11,24 +11,13 @@
 
 #include <carla/client/Vehicle.h>
 
-// Existing note for this section.
 //pcl code
-// Existing note for this section.
-//#include "render/render.h"
-
-// Alias the CARLA client namespace.
 namespace cc = carla::client;
-// Alias the CARLA geometry namespace.
 namespace cg = carla::geom;
-// Alias the CARLA sensor-data namespace.
 namespace csd = carla::sensor::data;
 
-// Enable chrono literal suffixes like 2s.
 using namespace std::chrono_literals;
-// Enable string literal suffixes.
 using namespace std::string_literals;
-
-// Use standard-library names without std prefix.
 using namespace std;
 
 #include <string>
@@ -60,7 +49,6 @@ void keyboardEventOccurred(const pcl::visualization::KeyboardEvent &event, void*
 // Begin block.
 {
 
-  	// Existing note for this section.
   	//boost::shared_ptr<pcl::visualization::PCLVisualizer> viewer = *static_cast<boost::shared_ptr<pcl::visualization::PCLVisualizer> *>(viewer_void);
 	// Check for a right steering key press.
 	if (event.getKeySym() == "Right" && event.keyDown()){
@@ -95,7 +83,7 @@ void keyboardEventOccurred(const pcl::visualization::KeyboardEvent &event, void*
 // End block.
 }
 
-// Apply a requested control change.
+// Apply a requested control change i.e., ACTUATE
 void Accuate(ControlState response, cc::Vehicle::Control& state){
 
 	// Handle forward throttle input.
@@ -171,6 +159,7 @@ struct Result {
 	int has_converged;
 };
 
+// lidar is rotated 90 degrees clockwise
 Eigen::Matrix4d getLidarToVehicleTransform() {
 	return transform3D(pi / 2, 0, 0, -0.5, 0, 1.8);
 }
@@ -185,14 +174,14 @@ Result ICP(PointCloudT::Ptr target, PointCloudT::Ptr source, Pose startingPose, 
 		startingPose.position.z);
 	Eigen::Matrix4d initTransform = vehicleToMapGuess * getLidarToVehicleTransform();
 
-	PointCloudT::Ptr transformSource(new PointCloudT);
+	PointCloudT::Ptr transformSource(new PointCloudT); //source transformed to map coordinates will be stored here
 	pcl::transformPointCloud(*source, *transformSource, initTransform);
 
 	pcl::console::TicToc time;
 	time.tic();
 	pcl::IterativeClosestPoint<PointT, PointT> icp;
 	icp.setTransformationEpsilon(1e-6);
-	icp.setMaximumIterations(6);
+	icp.setMaximumIterations(4);
 	icp.setInputSource(transformSource);
 	icp.setInputTarget(target);
 
@@ -240,7 +229,6 @@ int main(){
 	// Spawn the ego vehicle actor.
 	auto ego_actor = world.SpawnActor((*vehicles)[12], transform);
 
-	// Existing note for this section.
 	//Create lidar
 	// Fetch the lidar sensor blueprint.
 	auto lidar_bp = *(blueprint_library->Find("sensor.lidar.ray_cast"));
@@ -412,7 +400,7 @@ int main(){
 			}
 			n_scans++;
 
-			const double leafSize = 0.5f;
+			const double leafSize = 0.75f;
 			pcl::VoxelGrid<PointT> voxelFilter;
 			voxelFilter.setInputCloud(scanCloud);
 			voxelFilter.setLeafSize(leafSize, leafSize, leafSize);
@@ -426,17 +414,16 @@ int main(){
 				xs.erase(xs.begin());
 
 			// Existing note for this section.
-			// TASK_TRANSFORM_SCAN
 			//Transform scan so it aligns with ego's actual pose and render that scan
-			Eigen::Matrix4f vehicleToMap = (transform3D(
+			Eigen::Matrix4f lidarToMap = (transform3D(
 				pose.rotation.yaw,
 				pose.rotation.pitch,
 				pose.rotation.roll,
 				pose.position.x,
 				pose.position.y,
 				pose.position.z) * getLidarToVehicleTransform()).cast<float>();
-			pcl::transformPointCloud(*cloudFiltered, *transformedScan, vehicleToMap);
-			//END_OF_TASK_TRANSFORM_SCAN
+			pcl::transformPointCloud(*cloudFiltered, *transformedScan, lidarToMap);
+
 			// Remove the previous rendered scan.
 			viewer->removePointCloud("scan");
 			// Existing note for this section.
