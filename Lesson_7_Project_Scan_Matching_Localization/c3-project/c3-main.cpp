@@ -159,6 +159,8 @@ struct Result {
 	int has_converged;
 };
 
+const bool USE_NDT = true;
+
 // lidar is rotated 90 degrees clockwise
 Eigen::Matrix4d getLidarToVehicleTransform() {
 	return transform3D(pi / 2, 0, 0, -0.5, 0, 1.8);
@@ -195,6 +197,38 @@ Result ICP(PointCloudT::Ptr target, PointCloudT::Ptr source, Pose startingPose, 
 		icp.getFitnessScore(),
 		time.toc(),
 		icp.hasConverged()
+	};
+}
+
+Result NDT(PointCloudT::Ptr target, PointCloudT::Ptr source, Pose startingPose, double x_inc) {
+	Eigen::Matrix4d vehicleToMapGuess = transform3D(
+		startingPose.rotation.yaw,
+		startingPose.rotation.pitch,
+		startingPose.rotation.roll,
+		startingPose.position.x + x_inc,
+		startingPose.position.y,
+		startingPose.position.z);
+
+	PointCloudT::Ptr vehicleSource(new PointCloudT);
+	pcl::transformPointCloud(*source, *vehicleSource, getLidarToVehicleTransform());
+
+	pcl::console::TicToc time;
+	time.tic();
+	pcl::NormalDistributionsTransform<PointT, PointT> ndt;
+	ndt.setTransformationEpsilon(1e-6);
+	ndt.setResolution(1.0);
+	ndt.setMaximumIterations(4);
+	ndt.setInputSource(vehicleSource);
+	ndt.setInputTarget(target);
+
+	PointCloudT::Ptr cloudNdt(new PointCloudT);
+	ndt.align(*cloudNdt, vehicleToMapGuess.cast<float>());
+
+	return Result {
+		ndt.getFinalTransformation().cast<double>(),
+		ndt.getFitnessScore(),
+		time.toc(),
+		ndt.hasConverged()
 	};
 }
 
@@ -408,7 +442,7 @@ int main(){
 			voxelFilter.filter(*cloudFiltered);
 			
 			double avg_speed = compute_average_speed_per_iteration(xs);
-			Result result = ICP(mapCloud, cloudFiltered, pose, avg_speed);
+			Result result = USE_NDT ? NDT(mapCloud, cloudFiltered, pose, avg_speed) : ICP(mapCloud, cloudFiltered, pose, avg_speed);
 			pose = getPose(result.transform);
 			xs.push_back(pose.position.x);
 			if(xs.size() > xs_max_size)
