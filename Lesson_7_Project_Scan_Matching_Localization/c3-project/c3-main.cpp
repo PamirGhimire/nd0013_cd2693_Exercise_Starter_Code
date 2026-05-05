@@ -164,6 +164,60 @@ void drawCar(Pose pose, int num, Color color, double alpha, pcl::visualization::
 // End block.
 }
 
+struct Result {
+	Eigen::Matrix4d transform;
+	double fitness_score;
+	double process_time;
+	int has_converged;
+};
+
+Eigen::Matrix4d getLidarToVehicleTransform() {
+	return transform3D(pi / 2, 0, 0, -0.5, 0, 1.8);
+}
+
+Result ICP(PointCloudT::Ptr target, PointCloudT::Ptr source, Pose startingPose, double x_inc) {
+	Eigen::Matrix4d vehicleToMapGuess = transform3D(
+		startingPose.rotation.yaw,
+		startingPose.rotation.pitch,
+		startingPose.rotation.roll,
+		startingPose.position.x + x_inc,
+		startingPose.position.y,
+		startingPose.position.z);
+	Eigen::Matrix4d initTransform = vehicleToMapGuess * getLidarToVehicleTransform();
+
+	PointCloudT::Ptr transformSource(new PointCloudT);
+	pcl::transformPointCloud(*source, *transformSource, initTransform);
+
+	pcl::console::TicToc time;
+	time.tic();
+	pcl::IterativeClosestPoint<PointT, PointT> icp;
+	icp.setTransformationEpsilon(1e-6);
+	icp.setMaximumIterations(6);
+	icp.setInputSource(transformSource);
+	icp.setInputTarget(target);
+
+	PointCloudT::Ptr cloudIcp(new PointCloudT);
+	icp.align(*cloudIcp);
+
+	Eigen::Matrix4d transformationMatrix = icp.getFinalTransformation().cast<double>() * vehicleToMapGuess;
+	return Result {
+		transformationMatrix,
+		icp.getFitnessScore(),
+		time.toc(),
+		icp.hasConverged()
+	};
+}
+
+double compute_average_speed_per_iteration(vector<double> xs) {
+	double avg_speed = 0;
+	int n = xs.size() - 1;
+	if(n == 0)
+		return 0.0;
+	for(int i = 0; i < n; i++)
+		avg_speed += xs[i + 1] - xs[i];
+	return avg_speed / n;
+}
+
 // Start the program entry point.
 int main(){
 
@@ -245,6 +299,8 @@ int main(){
 	typename pcl::PointCloud<PointT>::Ptr cloudFiltered (new pcl::PointCloud<PointT>);
 	// Allocate the current scan cloud.
 	typename pcl::PointCloud<PointT>::Ptr scanCloud (new pcl::PointCloud<PointT>);
+	// Reuse the transformed scan cloud across frames to avoid per-scan heap allocation.
+	typename pcl::PointCloud<PointT>::Ptr transformedScan (new pcl::PointCloud<PointT>);
 
 	// Register the lidar callback.
 	lidar->Listen([&new_scan, &lastScanTime, &scanCloud](auto data){
@@ -282,6 +338,9 @@ int main(){
 	Pose poseRef(Point(vehicle->GetTransform().location.x, vehicle->GetTransform().location.y, vehicle->GetTransform().location.z), Rotate(vehicle->GetTransform().rotation.yaw * pi/180, vehicle->GetTransform().rotation.pitch * pi/180, vehicle->GetTransform().rotation.roll * pi/180));
 	// Track the largest localization error.
 	double maxError = 0;
+	int n_scans = 0;
+	vector<double> xs;
+	long unsigned int xs_max_size = 6;
 
 	// Run until the viewer closes.
 	while (!viewer->wasStopped())
@@ -347,44 +406,36 @@ int main(){
 			// Allow the next scan to be collected.
 			// Downsample the raw lidar scan to reduce ICP input size and improve matching speed.
 			new_scan = true;
+			if(n_scans == 0){
+				pose.position = truePose.position;
+				pose.rotation = truePose.rotation;
+			}
+			n_scans++;
+
+			const double leafSize = 0.5f;
 			pcl::VoxelGrid<PointT> voxelFilter;
 			voxelFilter.setInputCloud(scanCloud);
-			voxelFilter.setLeafSize(0.5f, 0.5f, 0.5f);
+			voxelFilter.setLeafSize(leafSize, leafSize, leafSize);
 			voxelFilter.filter(*cloudFiltered);
-			scanCloud.swap(cloudFiltered);
 			
-			// Register the filtered scan against the map using ICP, seeded by the previous pose estimate.
-			pcl::IterativeClosestPoint<PointT, PointT> icp;
-			icp.setInputSource(scanCloud);
-			icp.setInputTarget(mapCloud);
-			icp.setMaximumIterations(25);
-			icp.setMaxCorrespondenceDistance(3.0);
-			icp.setTransformationEpsilon(1e-8);
-			icp.setEuclideanFitnessEpsilon(1e-3);
-
-			PointCloudT alignedScan;
-			Eigen::Matrix4f guess = transform3D(
-				pose.rotation.yaw,
-				pose.rotation.pitch,
-				pose.rotation.roll,
-				pose.position.x,
-				pose.position.y,
-				pose.position.z).cast<float>();
-			icp.align(alignedScan, guess);
-			pose = getPose(icp.getFinalTransformation().cast<double>());
+			double avg_speed = compute_average_speed_per_iteration(xs);
+			Result result = ICP(mapCloud, cloudFiltered, pose, avg_speed);
+			pose = getPose(result.transform);
+			xs.push_back(pose.position.x);
+			if(xs.size() > xs_max_size)
+				xs.erase(xs.begin());
 
 			// Existing note for this section.
 			// TASK_TRANSFORM_SCAN
 			//Transform scan so it aligns with ego's actual pose and render that scan
-			PointCloudT::Ptr transformedScan(new PointCloudT);
-			Eigen::Matrix4f vehicleToMap = transform3D(
+			Eigen::Matrix4f vehicleToMap = (transform3D(
 				pose.rotation.yaw,
 				pose.rotation.pitch,
 				pose.rotation.roll,
 				pose.position.x,
 				pose.position.y,
-				pose.position.z).cast<float>();
-			pcl::transformPointCloud(*scanCloud, *transformedScan, vehicleToMap);
+				pose.position.z) * getLidarToVehicleTransform()).cast<float>();
+			pcl::transformPointCloud(*cloudFiltered, *transformedScan, vehicleToMap);
 			//END_OF_TASK_TRANSFORM_SCAN
 			// Remove the previous rendered scan.
 			viewer->removePointCloud("scan");
