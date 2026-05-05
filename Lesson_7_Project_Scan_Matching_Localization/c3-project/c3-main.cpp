@@ -184,6 +184,7 @@ Result ICP(PointCloudT::Ptr target, PointCloudT::Ptr source, Pose startingPose, 
 	icp.setMaximumIterations(4);
 	icp.setInputSource(transformSource);
 	icp.setInputTarget(target);
+	icp.setMaxCorrespondenceDistance(20);
 
 	PointCloudT::Ptr cloudIcp(new PointCloudT);
 	icp.align(*cloudIcp);
@@ -400,7 +401,7 @@ int main(){
 			}
 			n_scans++;
 
-			const double leafSize = 0.75f;
+			const double leafSize = 0.5f;
 			pcl::VoxelGrid<PointT> voxelFilter;
 			voxelFilter.setInputCloud(scanCloud);
 			voxelFilter.setLeafSize(leafSize, leafSize, leafSize);
